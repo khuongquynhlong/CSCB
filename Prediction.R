@@ -3,6 +3,39 @@ library(tidyverse)
 library(magrittr)
 library(caret)
 library(randomForest)
+library(pROC)
+library(classifierplots)
+
+#----------  Set up theme
+#===============================================================================
+mytheme <- function(...) {
+    theme_minimal() +
+        theme(
+            plot.title = element_text(size = 14,color = "grey10",  face = "bold", hjust = 0.5),
+            plot.subtitle = element_text(face = "italic", color = "gray10", size = 14),
+            plot.caption = element_text(face = "italic", size = 14, color = "gray10"),
+            axis.line = element_line(linetype = "solid"),
+            axis.text.x = element_text(color = "gray10", size = 14),
+            axis.text.y = element_text(color = "gray10", size = 14),
+            # axis.ticks = element_blank(),
+            axis.title.x = element_text(color = "gray10", size = 14),
+            axis.title.y = element_text(color = "gray10", size = 14),
+            # panel.grid.minor = element_blank(),
+            # panel.grid.major = element_blank(),
+            plot.background = element_blank(),
+            panel.background = element_rect(fill = "white", color = NA),
+            legend.title = element_text(size = 14, face = "bold"),
+            legend.direction = "horizontal",
+            legend.position = "top",
+            legend.background = element_rect(fill = NA, color = NA),
+            legend.text = element_text(size = 14),
+            legend.key.width = unit(4, "line"),
+            strip.text = element_text(size = 14, face = "bold"),
+            strip.background = element_rect(fill = NA, color = NA)
+        )
+}
+
+
 #-------------------------------------------------------------------------------
 df <- read_csv("Data/ML_DataSet.csv")
 
@@ -111,62 +144,222 @@ rf_model_ad <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + p
 
 rf_model_ad
 
+plot(rf_model_ad)
+
 # extracting variable importance
 rf_imp_ad <- varImp(rf_model_ad, scale = FALSE)
 rf_imp_ad <- rf_imp_ad$importance
 rf_gini_ad <- data.frame(Variables = row.names(rf_imp_ad), 
                       MeanDecreaseGini = rf_imp_ad$Overall)
 
-rf_gini_ad %>% ggplot(aes(x=reorder(Variables, MeanDecreaseGini), 
-             y=MeanDecreaseGini, fill=Variables)) +
-    geom_col(alpha = 0.8) +
-    coord_flip() + 
-    theme(legend.position="none") 
+rf_gini_ad %<>% mutate(Variables = case_when(Variables == "plan_type1" ~ "Executive/Comprehensive",
+                                          Variables == "plan_type2" ~ "Keycare",
+                                          Variables == "plan_type3" ~ "Priority/Saver",
+                                          Variables == "rub_desc1" ~ "Healthy Users",
+                                          Variables == "rub_desc2" ~ "Low Users",
+                                          Variables == "rub_desc3" ~ "Moderate Users",
+                                          Variables == "rub_desc4" ~ "High Users",
+                                          Variables == "rub_desc5" ~ "Very High Users",
+                                          Variables == "age" ~ "Age",
+                                          Variables == "gender" ~ "Gender",
+                                          Variables == "diabetes" ~ "Diabetes",
+                                          Variables == "hypertension" ~ "Hypertension",
+                                          Variables == "hypercholesterolaemia" ~ "Hypercholesterolaemia",
+                                          Variables == "depression" ~ "Depression",
+                                          Variables == "copd" ~ "COPD"))
 
+rf_gini_ad %>% ggplot(aes(x=reorder(Variables, MeanDecreaseGini), 
+             y=MeanDecreaseGini)) +
+    geom_col(alpha = 0.8, show.legend = F, fill = "navy", color = "white") +
+    coord_flip() + 
+    theme(legend.position="none") +
+    labs(x = NULL, y = "Gini Score") +
+    mytheme() -> gini
+
+png("Figures/F1_Gini.png", units="in", width = 12, height = 6, res = 300)
+gini
+dev.off()
 
 # Internal error
+#-------------------------------
 rf_pred_prob_train <- predict(rf_model_ad, train_ad, type = "prob")[[2]]
-train_ad_com = cbind(train_ad, rf_pred_prob_train) %>% as.tibble()
+rf_pred_class_train <- predict(rf_model_ad, train_ad)
+
+
+train_ad_com <- cbind(train_ad, rf_pred_prob_train, rf_pred_class_train) %>% 
+    mutate(admission_flag = as.factor(admission_flag),
+           admission_flag_01 = ifelse(admission_flag == "Yes", 1, 0))
+
+
+rf_cm_train <- confusionMatrix(train_ad_com$admission_flag, 
+                               train_ad_com$rf_pred_class_train,
+                               positive = "Yes")
+rf_cm_train
+
+# AUC
+rf_roc_train <- roc_plot(train_ad_com$admission_flag_01, train_ad_com$rf_pred_prob_train) + 
+    mytheme() +
+    labs(title = "ROC - Random forest: Training Dataset")
+    
+# External error
+#-------------------------------
+rf_pred_prob_test <- predict(rf_model_ad, test_ad, type = "prob")[[2]]
+rf_pred_class_test <- predict(rf_model_ad, test_ad)
+
+
+test_ad_com <- cbind(test_ad, rf_pred_prob_test, rf_pred_class_test) %>% 
+    mutate(admission_flag = as.factor(admission_flag),
+           admission_flag_01 = ifelse(admission_flag == "Yes", 1, 0))
+
+
+rf_cm_test <- confusionMatrix(test_ad_com$admission_flag, 
+                              test_ad_com$rf_pred_class_test,
+                              positive = "Yes")
+rf_cm_test
+
+# AUC
+
+rf_roc_test <- roc_plot(test_ad_com$admission_flag_01, test_ad_com$rf_pred_prob_test) + 
+    mytheme() +
+    geom_line(color = "navy", size = 2) +
+    labs(title = "ROC - Random forest: Testing Dataset")
+
+
+png("Figures/F2_Roc_rf.png", units="in", width = 14, height = 6, res = 300)
+gridExtra::grid.arrange(rf_roc_train, rf_roc_test, ncol = 2)
+dev.off()
+
 
 
 #----------KNN 
 #===============================================================================
 set.seed(123)
-knnModel <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
-                      rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
-                      hypercholesterolaemia + depression + copd,
+knn_model_ad <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                      rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + 
+                      diabetes + hypertension + hypercholesterolaemia + depression + copd,
                   data = train_ad,
                   method = "knn", 				
                   preProc = c("center","scale"),
                   metric="ROC",
-                  tuneLength = 10,
                   trControl= fitControl)
-knnModel
+knn_model_ad
+
+plot(knn_model_ad)
+
+# Internal error
+#-------------------------------
+knn_pred_prob_train <- predict(knn_model_ad, train_ad, type = "prob")[[2]]
+knn_pred_class_train <- predict(knn_model_ad, train_ad)
+
+
+train_ad_com <- cbind(train_ad_com, knn_pred_prob_train, knn_pred_class_train)
+
+knn_cm_train <- confusionMatrix(train_ad_com$admission_flag, 
+                               train_ad_com$knn_pred_class_train,
+                               positive = "Yes")
+knn_cm_train
+
+# AUC
+knn_roc_train <- roc_plot(train_ad_com$admission_flag_01, train_ad_com$knn_pred_prob_train) + 
+    mytheme() +
+    labs(title = "ROC - KNN: Training Dataset")
+
+# External error
+#-------------------------------
+knn_pred_prob_test <- predict(knn_model_ad, test_ad, type = "prob")[[2]]
+knn_pred_class_test <- predict(knn_model_ad, test_ad)
+
+
+test_ad_com <- cbind(test_ad_com, knn_pred_prob_test, knn_pred_class_test)
+
+knn_cm_test <- confusionMatrix(test_ad_com$admission_flag, 
+                              test_ad_com$knn_pred_class_test,
+                              positive = "Yes")
+knn_cm_test
+
+# AUC
+
+knn_roc_test <- roc_plot(test_ad_com$admission_flag_01, test_ad_com$knn_pred_prob_test) + 
+    mytheme() +
+    geom_line(color = "navy", size = 2) +
+    labs(title = "ROC - KNN: Testing Dataset")
+
+
+png("Figures/F3_Roc_knn.png", units="in", width = 14, height = 6, res = 300)
+gridExtra::grid.arrange(knn_roc_train, knn_roc_test, ncol = 2)
+dev.off()
 
 
 
 #---------- Logisctic regresion 
 #===============================================================================
 set.seed(123)
-glmModel <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
-                      rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
-                      hypercholesterolaemia + depression + copd,
+logit_model_ad <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                      rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + 
+                      diabetes + hypertension + hypercholesterolaemia + depression + copd,
                   data = train_ad,
                   method = "glm", 
                   metric="ROC",
-                  tuneLength = 10,
                   trControl= fitControl)
-glmModel
+logit_model_ad
+
+
+
+# Internal error
+#-------------------------------
+logit_pred_prob_train <- predict(logit_model_ad, train_ad, type = "prob")[[2]]
+logit_pred_class_train <- predict(logit_model_ad, train_ad)
+
+
+train_ad_com <- cbind(train_ad_com, logit_pred_prob_train, logit_pred_class_train)
+
+logit_cm_train <- confusionMatrix(train_ad_com$admission_flag, 
+                                train_ad_com$logit_pred_class_train,
+                                positive = "Yes")
+logit_cm_train
+
+# AUC
+logit_roc_train <- roc_plot(train_ad_com$admission_flag_01, train_ad_com$logit_pred_prob_train) + 
+    mytheme() +
+    labs(title = "ROC - Logistic: Training Dataset")
+
+# External error
+#-------------------------------
+logit_pred_prob_test <- predict(logit_model_ad, test_ad, type = "prob")[[2]]
+logit_pred_class_test <- predict(logit_model_ad, test_ad)
+
+
+test_ad_com <- cbind(test_ad_com, logit_pred_prob_test, logit_pred_class_test)
+
+logit_cm_test <- confusionMatrix(test_ad_com$admission_flag, 
+                               test_ad_com$logit_pred_class_test,
+                               positive = "Yes")
+logit_cm_test
+
+# AUC
+
+logit_roc_test <- roc_plot(test_ad_com$admission_flag_01, test_ad_com$logit_pred_prob_test) + 
+    mytheme() +
+    geom_line(color = "navy", size = 2) +
+    labs(title = "ROC - Logistic: Testing Dataset")
+
+
+png("Figures/F4_Roc_logit.png", units="in", width = 14, height = 6, res = 300)
+gridExtra::grid.arrange(logit_roc_train, logit_roc_test, ncol = 2)
+dev.off()
 
 
 
 
 
+png("Figures/F2_Roc_all.png", units="in", width = 14, height = 12, res = 300)
+gridExtra::grid.arrange(rf_roc_train, rf_roc_test,
+                        knn_roc_train, knn_roc_test, 
+                        logit_roc_train, logit_roc_test, ncol = 2)
+dev.off()
 
 
-
-
-
-
+# saveRDS(train_ad_com, "Data/train_ad_com.RDS")
+# saveRDS(test_ad_com, "Data/test_ad_com.RDS")
 
 
