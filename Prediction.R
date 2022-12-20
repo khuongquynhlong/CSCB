@@ -91,13 +91,13 @@ fitControl <- trainControl(method = "repeatedcv",
                            search = "grid")
 
 #---------- Random forest 
+#===============================================================================
 # library(doParallel)
 # cores <- 8
 # registerDoParallel(cores = cores)
 
-
 # # Grid search setting
-RFtunegrid <- expand.grid(.mtry = 2:5) # Set as 3 only since it run too slow :)))
+RFtunegrid <- expand.grid(.mtry = 2:5)
 
 set.seed(123)
 rf_model_ad <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
@@ -117,10 +117,46 @@ rf_imp_ad <- rf_imp_ad$importance
 rf_gini_ad <- data.frame(Variables = row.names(rf_imp_ad), 
                       MeanDecreaseGini = rf_imp_ad$Overall)
 
+rf_gini_ad %>% ggplot(aes(x=reorder(Variables, MeanDecreaseGini), 
+             y=MeanDecreaseGini, fill=Variables)) +
+    geom_col(alpha = 0.8) +
+    coord_flip() + 
+    theme(legend.position="none") 
 
-gc()
+
+# Internal error
+rf_pred_prob_train <- predict(rf_model_ad, train_ad, type = "prob")[[2]]
+train_ad_com = cbind(train_ad, rf_pred_prob_train) %>% as.tibble()
 
 
+#----------KNN 
+#===============================================================================
+set.seed(123)
+knnModel <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                      rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
+                      hypercholesterolaemia + depression + copd,
+                  data = train_ad,
+                  method = "knn", 				
+                  preProc = c("center","scale"),
+                  metric="ROC",
+                  tuneLength = 10,
+                  trControl= fitControl)
+knnModel
+
+
+
+#---------- Logisctic regresion 
+#===============================================================================
+set.seed(123)
+glmModel <- train(admission_flag ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                      rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
+                      hypercholesterolaemia + depression + copd,
+                  data = train_ad,
+                  method = "glm", 
+                  metric="ROC",
+                  tuneLength = 10,
+                  trControl= fitControl)
+glmModel
 
 
 
