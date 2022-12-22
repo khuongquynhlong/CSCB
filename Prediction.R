@@ -359,7 +359,302 @@ gridExtra::grid.arrange(rf_roc_train, rf_roc_test,
 dev.off()
 
 
-# saveRDS(train_ad_com, "Data/train_ad_com.RDS")
-# saveRDS(test_ad_com, "Data/test_ad_com.RDS")
+# saveRDS(train_ad_com, "train_ad_com.RDS")
+# saveRDS(test_ad_com, "test_ad_com.RDS")
 
 
+
+
+
+
+
+
+
+
+
+#===============================================================================
+#---------- For death outcome
+#===============================================================================
+
+df_death <- df %>% select(death, admission_flag, age, gender, plan_type1, plan_type2, plan_type3, plan_type4,
+                          rub_desc1, rub_desc2, rub_desc3, rub_desc4, rub_desc5, covid_wave1,
+                          covid_wave2, covid_wave3, hiv, diabetes, hypertension, 
+                          hypercholesterolaemia, congestive_cardiac_failure, depression, hypothyroidism, 
+                          glaucoma, chronic_renal_disease, ischaemic_heart_disease, oncology, copd,
+                          tuberculosis, reinfection_flag, no_of_comobs)
+
+
+sapply(df_death, function(x){sum(is.na(x))})
+glimpse(df_death)
+
+
+# Check near zero variance variables ==> should remove
+nzv <- nearZeroVar(df_death)
+names(df_death)[nzv]
+
+# [1] "death"                      "plan_type4"                 "covid_wave1"               
+# [4] "covid_wave2"                "covid_wave3"                "hiv"                       
+# [7] "congestive_cardiac_failure" "hypothyroidism"             "glaucoma"                  
+# [10] "chronic_renal_disease"      "ischaemic_heart_disease"    "oncology"                  
+# [13] "tuberculosis"               "reinfection_flag"  
+
+#---------- Split data
+set.seed(123)
+trainingRows <- createDataPartition(df_death$admission_flag, p = 0.8, list = F)
+
+train_death <- df_death[trainingRows,] # Training dataset
+test_death <- df_death[-trainingRows,] # Testing dataset
+
+dim(train_death)
+dim(test_death)
+
+
+table(train_death$admission_flag)
+table(test_death$admission_flag)
+
+#---------- Set up 
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 1,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           search = "grid")
+
+#---------- Random forest 
+#===============================================================================
+# library(doParallel)
+# cores <- 8
+# registerDoParallel(cores = cores)
+
+# # Grid search setting
+RFtunegrid <- expand.grid(.mtry = 5)
+
+set.seed(123)
+rf_model_death <- train(death ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                            rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
+                            hypercholesterolaemia + depression + copd + admission_flag,
+                        data = train_death, 
+                        method = "rf", metric = "ROC",
+                        preProcess= c("center", "scale"),
+                        tuneGrid = RFtunegrid, trControl = fitControl)
+
+rf_model_death
+
+plot(rf_model_death)
+
+# extracting variable importance
+rf_imp_death <- varImp(rf_model_death, scale = FALSE)
+rf_imp_death <- rf_imp_death$importance
+rf_gini_death <- data.frame(Variables = row.names(rf_imp_death), 
+                            MeanDecreaseGini = rf_imp_death$Overall)
+
+rf_gini_death %<>% mutate(Variables = case_when(Variables == "plan_type1" ~ "Executive/Comprehensive",
+                                                Variables == "plan_type2" ~ "Keycare",
+                                                Variables == "plan_type3" ~ "Priority/Saver",
+                                                Variables == "rub_desc1" ~ "Healthy Users",
+                                                Variables == "rub_desc2" ~ "Low Users",
+                                                Variables == "rub_desc3" ~ "Moderate Users",
+                                                Variables == "rub_desc4" ~ "High Users",
+                                                Variables == "rub_desc5" ~ "Very High Users",
+                                                Variables == "age" ~ "Age",
+                                                Variables == "gender" ~ "Gender",
+                                                Variables == "diabetes" ~ "Diabetes",
+                                                Variables == "hypertension" ~ "Hypertension",
+                                                Variables == "hypercholesterolaemia" ~ "Hypercholesterolaemia",
+                                                Variables == "depression" ~ "Depression",
+                                                Variables == "copd" ~ "COPD",
+                                                Variables == "admission_flag" ~ "Admission"))
+
+rf_gini_death %>% ggplot(aes(x=reorder(Variables, MeanDecreaseGini), 
+                             y=MeanDecreaseGini)) +
+    geom_col(alpha = 0.8, show.legend = F, fill = "navy", color = "white") +
+    coord_flip() + 
+    theme(legend.position="none") +
+    labs(x = NULL, y = "Gini Score") +
+    mytheme() -> gini_death
+
+png("Figures/F1_Gini_death.png", units="in", width = 12, height = 6, res = 300)
+gini_death
+dev.off()
+
+# Internal error
+#-------------------------------
+rf_pred_prob_train <- predict(rf_model_death, train_death, type = "prob")[[2]]
+rf_pred_class_train <- predict(rf_model_death, train_death)
+
+
+train_death_com <- cbind(train_death, rf_pred_prob_train, rf_pred_class_train) %>% 
+    mutate(death = as.factor(death),
+           death_01 = ifelse(death == "Yes", 1, 0))
+
+
+rf_cm_train <- confusionMatrix(train_death_com$death, 
+                               train_death_com$rf_pred_class_train,
+                               positive = "Yes")
+rf_cm_train
+
+# AUC
+rf_roc_train <- roc_plot(train_death_com$death_01, train_death_com$rf_pred_prob_train) + 
+    mytheme() +
+    labs(title = "ROC - Random forest: Training Dataset")
+
+# External error
+#-------------------------------
+rf_pred_prob_test <- predict(rf_model_death, test_death, type = "prob")[[2]]
+rf_pred_class_test <- predict(rf_model_death, test_death)
+
+
+test_death_com <- cbind(test_death, rf_pred_prob_test, rf_pred_class_test) %>% 
+    mutate(death = as.factor(death),
+           death_01 = ifelse(death == "Yes", 1, 0))
+
+
+rf_cm_test <- confusionMatrix(test_death_com$death, 
+                              test_death_com$rf_pred_class_test,
+                              positive = "Yes")
+rf_cm_test
+
+# AUC
+
+rf_roc_test <- roc_plot(test_death_com$death_01, test_death_com$rf_pred_prob_test) + 
+    mytheme() +
+    geom_line(color = "navy", size = 2) +
+    labs(title = "ROC - Random forest: Testing Dataset")
+
+
+png("Figures/F2_Roc_rf_daeth.png", units="in", width = 14, height = 6, res = 300)
+gridExtra::grid.arrange(rf_roc_train, rf_roc_test, ncol = 2)
+dev.off()
+
+
+
+#----------KNN 
+#===============================================================================
+set.seed(123)
+knn_model_death <- train(death ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                             rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
+                             hypercholesterolaemia + depression + copd + admission_flag,
+                         data = train_death,
+                         method = "knn", 				
+                         preProc = c("center","scale"),
+                         metric="ROC",
+                         trControl= fitControl)
+knn_model_death
+
+plot(knn_model_death)
+
+# Internal error
+#-------------------------------
+knn_pred_prob_train <- predict(knn_model_death, train_death, type = "prob")[[2]]
+knn_pred_class_train <- predict(knn_model_death, train_death)
+
+
+train_death_com <- cbind(train_death_com, knn_pred_prob_train, knn_pred_class_train)
+
+knn_cm_train <- confusionMatrix(train_death_com$death, 
+                                train_death_com$knn_pred_class_train,
+                                positive = "Yes")
+knn_cm_train
+
+# AUC
+knn_roc_train <- roc_plot(train_death_com$death_01, train_death_com$knn_pred_prob_train) + 
+    mytheme() +
+    labs(title = "ROC - KNN: Training Dataset")
+
+# External error
+#-------------------------------
+knn_pred_prob_test <- predict(knn_model_death, test_death, type = "prob")[[2]]
+knn_pred_class_test <- predict(knn_model_death, test_death)
+
+
+test_death_com <- cbind(test_death_com, knn_pred_prob_test, knn_pred_class_test)
+
+knn_cm_test <- confusionMatrix(test_death_com$death, 
+                               test_death_com$knn_pred_class_test,
+                               positive = "Yes")
+knn_cm_test
+
+# AUC
+
+knn_roc_test <- roc_plot(test_death_com$death_01, test_death_com$knn_pred_prob_test) + 
+    mytheme() +
+    geom_line(color = "navy", size = 2) +
+    labs(title = "ROC - KNN: Testing Dataset")
+
+
+png("Figures/F3_Roc_knn_death.png", units="in", width = 14, height = 6, res = 300)
+gridExtra::grid.arrange(knn_roc_train, knn_roc_test, ncol = 2)
+dev.off()
+
+
+
+#---------- Logisctic regresion 
+#===============================================================================
+set.seed(123)
+logit_model_death <- train(death ~ age + gender + plan_type1 + plan_type2 + plan_type3 +
+                               rub_desc1 + rub_desc2 + rub_desc3 + rub_desc4 + rub_desc5 + diabetes + hypertension + 
+                               hypercholesterolaemia + depression + copd + admission_flag,
+                           data = train_death,
+                           method = "glm", 
+                           metric="ROC",
+                           trControl= fitControl)
+logit_model_death
+
+
+
+# Internal error
+#-------------------------------
+logit_pred_prob_train <- predict(logit_model_death, train_death, type = "prob")[[2]]
+logit_pred_class_train <- predict(logit_model_death, train_death)
+
+
+train_death_com <- cbind(train_death_com, logit_pred_prob_train, logit_pred_class_train)
+
+logit_cm_train <- confusionMatrix(train_death_com$death, 
+                                  train_death_com$logit_pred_class_train,
+                                  positive = "Yes")
+logit_cm_train
+
+# AUC
+logit_roc_train <- roc_plot(train_death_com$death_01, train_death_com$logit_pred_prob_train) + 
+    mytheme() +
+    labs(title = "ROC - Logistic: Training Dataset")
+
+# External error
+#-------------------------------
+logit_pred_prob_test <- predict(logit_model_death, test_death, type = "prob")[[2]]
+logit_pred_class_test <- predict(logit_model_death, test_death)
+
+
+test_death_com <- cbind(test_death_com, logit_pred_prob_test, logit_pred_class_test)
+
+logit_cm_test <- confusionMatrix(test_death_com$death, 
+                                 test_death_com$logit_pred_class_test,
+                                 positive = "Yes")
+logit_cm_test
+
+# AUC
+
+logit_roc_test <- roc_plot(test_death_com$death_01, test_death_com$logit_pred_prob_test) + 
+    mytheme() +
+    geom_line(color = "navy", size = 2) +
+    labs(title = "ROC - Logistic: Testing Dataset")
+
+
+png("Figures/F4_Roc_logit_death.png", units="in", width = 14, height = 6, res = 300)
+gridExtra::grid.arrange(logit_roc_train, logit_roc_test, ncol = 2)
+dev.off()
+
+
+
+
+
+png("Figures/F2_Roc_all_death.png", units="in", width = 14, height = 12, res = 300)
+gridExtra::grid.arrange(rf_roc_train, rf_roc_test,
+                        knn_roc_train, knn_roc_test, 
+                        logit_roc_train, logit_roc_test, ncol = 2)
+dev.off()
+
+
+# saveRDS(train_death_com, "train_death_com.RDS")
+# saveRDS(test_death_com, "test_death_com.RDS")
